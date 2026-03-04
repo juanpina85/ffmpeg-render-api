@@ -6,7 +6,10 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+// Acepta JSON normal
+app.use(express.json({ limit: "10mb", type: ["application/json", "application/*+json"] }));
+// Acepta body como texto si Make lo manda como text/plain
+app.use(express.text({ limit: "10mb", type: ["text/plain", "text/*", "*/*"] }));
 app.use(morgan("tiny"));
 
 const PORT = process.env.PORT || 3000;
