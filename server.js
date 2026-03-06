@@ -186,41 +186,46 @@ app.post("/render", auth, async (req, res) => {
     ].join("");
 
     // ⚙️ FFmpeg args optimizados para Railway (evita threads=60 y SIGKILL)
-    const args = [
-      "-y",
+  
 
-      // Limita uso de CPU
-      "-threads", "2",
+const args = [
+  "-y",
 
-      // inputs
-      "-i", bgFile,
-      "-loop", "1", "-i", imgFile,
-      "-i", voicePath,
-      "-i", musicPath,
+  // Limita CPU (clave)
+  "-threads", "2",
 
-      "-filter_complex", filter,
-      "-map", "[v]",
-      "-map", "[a]",
+  // inputs
+  "-i", bgFile,
+  "-loop", "1", "-i", imgFile,
+  "-i", voicePath,
+  "-i", musicPath,
 
-      // video más liviano
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "30",
-      "-pix_fmt", "yuv420p",
-      "-r", "30",
-      "-x264-params", "threads=2",
+  "-filter_complex", filter,
+  "-map", "[v]",
+  "-map", "[a]",
 
-      // audio más liviano
-      "-c:a", "aac",
-      "-b:a", "96k",
-      "-ac", "1",
-      "-ar", "24000",
+  // video liviano
+  "-c:v", "libx264",
+  "-preset", "ultrafast",
+  "-crf", "30",
+  "-pix_fmt", "yuv420p",
+  "-r", "30",
 
-      "-movflags", "+faststart",
-      "-shortest",
+  // fuerza x264 a no abrir 60 hilos
+  "-x264-params", "threads=2:lookahead_threads=1",
 
-      outPath,
-    ];
+  // audio liviano
+  "-c:a", "aac",
+  "-b:a", "96k",
+  "-ac", "1",
+  "-ar", "24000",
+
+  "-movflags", "+faststart",
+  "-shortest",
+
+  outPath,
+];
+
 
     await runFfmpeg(args);
 
