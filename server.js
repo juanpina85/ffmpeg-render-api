@@ -7,11 +7,9 @@ const { spawn } = require("child_process");
 
 const app = express();
 
-// JSON normal
+// JSON normal + fallback por si Make manda text/plain
 app.use(express.json({ limit: "10mb", type: ["application/json", "application/*+json"] }));
-// Fallback por si Make manda text/plain
 app.use(express.text({ limit: "10mb", type: ["text/plain", "text/*", "*/*"] }));
-
 app.use(morgan("tiny"));
 
 const PORT = process.env.PORT || 3000;
@@ -40,13 +38,14 @@ function maybeParseJsonBody(req) {
 
 function normalizeDropbox(url) {
   if (!url || typeof url !== "string") return url;
-  // Dropbox share link -> force download
+
+  // trim por si Make manda un espacio al inicio
+  url = url.trim();
+
+  // Dropbox share link -> forzar descarga
   if (url.includes("dropbox.com/")) {
     const u = new URL(url);
-    // si ya es dl.dropboxusercontent.com, lo dejamos
-    if (u.hostname === "dl.dropboxusercontent.com") return url;
-
-    // forzamos dl=1
+    // fuerza dl=1
     u.searchParams.set("dl", "1");
     return u.toString();
   }
@@ -59,9 +58,8 @@ async function downloadToFile(url, outPath) {
   const resp = await axios.get(finalUrl, {
     responseType: "stream",
     timeout: 180000,
-    maxRedirects: 5,
+    maxRedirects: 10,
     headers: {
-      // ayuda con algunos hosts/CDNs
       "User-Agent": "Mozilla/5.0 (compatible; pulso-render/1.0)",
       Accept: "*/*",
     },
@@ -81,9 +79,9 @@ function runFfmpeg(args) {
     const p = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     p.stderr.on("data", (d) => (stderr += d.toString()));
-    p.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg failed (${code}): ${stderr.slice(-4000)}`));
+    p.on("close", (code, signal) => {
+      if (code === 0) return resolve();
+      reject(new Error(`ffmpeg failed (code=${code}, signal=${signal}): ${stderr.slice(-4000)}`));
     });
   });
 }
@@ -91,7 +89,7 @@ function runFfmpeg(args) {
 // ---- Routes ----
 app.get("/health", (_, res) => res.json({ status: "ok" }));
 
-// Útil para debug (ya lo estabas usando)
+// Debug para ver qué llega desde Make
 app.post("/debug", auth, (req, res) => {
   const body = maybeParseJsonBody(req);
   res.json({
@@ -106,7 +104,7 @@ app.post("/debug", auth, (req, res) => {
  * body:
  * {
  *  background_url: string (mp4)
- *  image_url: string (jpg/png/webp)   <-- NUEVO
+ *  image_url: string (jpg/png/webp)
  *  voiceover_url: string (mp3)
  *  music_url: string (mp3)
  *  headline: string
@@ -127,29 +125,26 @@ app.post("/render", auth, async (req, res) => {
       footer,
     } = body;
 
-    if (!background_url || !voiceover_url || !music_url || !headline) {
+    if (!background_url || !voiceover_url || !music_url || !headline || !image_url) {
       return res.status(400).json({ error: "missing fields" });
-    }
-    if (!image_url) {
-      return res.status(400).json({ error: "missing fields (image_url)" });
     }
 
     const workdir = fs.mkdtempSync(path.join("/tmp/", "render-"));
     const bgFile = path.join(workdir, "bg.mp4");
-    const imgFile = path.join(workdir, "img");
+
+    // IMPORTANTE: guardamos con extensión para que ffmpeg detecte formato sin problemas
+    const imgFile = path.join(workdir, "img.jpg");
+
     const voicePath = path.join(workdir, "voice.mp3");
     const musicPath = path.join(workdir, "music.mp3");
     const outPath = path.join(workdir, "out.mp4");
 
     // Descargas
     await downloadToFile(background_url, bgFile);
+    await downloadToFile(image_url, imgFile);
     await downloadToFile(voiceover_url, voicePath);
     await downloadToFile(music_url, musicPath);
 
-    // Imagen: puede ser jpg/png/webp, guardamos sin extensión fija
-    await downloadToFile(image_url, imgFile);
-
-    // Tipografías
     const fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
     // Escape básico para drawtext
@@ -165,79 +160,39 @@ app.post("/render", auth, async (req, res) => {
       .replace(/'/g, "\\'")
       .replace(/\n/g, " ");
 
-    /**
-     * Layout:
-     * - Base video 1080x1920
-     * - Imagen grande arriba en "card":
-     *   - ancho 980
-     *   - alto 720 aprox
-     *   - con borde + sombra suave (simulada)
-     * - Headline barra arriba
-     * - Footer abajo
-     *
-     * Inputs:
-     * 0: bg mp4 (video)
-     * 1: image (as video stream via -loop 1)
-     * 2: voice mp3
-     * 3: music mp3
-     */
-
-    // Parámetros “card”
+    // Layout card
     const cardW = 980;
     const cardH = 720;
-    const cardX = Math.floor((1080 - cardW) / 2); // centrado
+    const cardX = Math.floor((1080 - cardW) / 2);
     const cardY = 260;
-
-    // Barra headline
     const headlineY = 90;
-
-    // Footer
     const footerY = 1780;
 
     const filter = [
-      // 0:v background -> full 9:16
       `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p[bg];`,
-
-      // 1:v image loop -> card size (cover)
       `[1:v]scale=${cardW}:${cardH}:force_original_aspect_ratio=increase,crop=${cardW}:${cardH},format=rgba[img];`,
-
-      // sombra (un rectángulo negro con alpha) + overlay imagen arriba
       `[bg]drawbox=x=${cardX-6}:y=${cardY-6}:w=${cardW+12}:h=${cardH+12}:color=black@0.35:t=fill[bg2];`,
-
-      // borde blanco fino
       `[bg2]drawbox=x=${cardX-2}:y=${cardY-2}:w=${cardW+4}:h=${cardH+4}:color=white@0.85:t=fill[bg3];`,
-
-      // overlay imagen
       `[bg3][img]overlay=x=${cardX}:y=${cardY}[v1];`,
-
-      // headline bar
       `[v1]drawbox=x=60:y=${headlineY}:w=960:h=110:color=black@0.55:t=fill[v2];`,
-
-      // headline text
-      `[v2]drawtext=fontfile=${fontPath}:text='${safeHeadline}':fontcolor=white:fontsize=56:` +
-        `x=90:y=${headlineY+28}[v3];`,
-
-      // footer bar
+      `[v2]drawtext=fontfile=${fontPath}:text='${safeHeadline}':fontcolor=white:fontsize=56:x=90:y=${headlineY+28}[v3];`,
       `[v3]drawbox=x=240:y=${footerY-28}:w=600:h=70:color=black@0.35:t=fill[v4];`,
-
-      // footer text
-      `[v4]drawtext=fontfile=${fontPath}:text='${safeFooter}':fontcolor=white:fontsize=34:` +
-        `x=(w-text_w)/2:y=${footerY}[v];`,
-
-      // audio mix
+      `[v4]drawtext=fontfile=${fontPath}:text='${safeFooter}':fontcolor=white:fontsize=34:x=(w-text_w)/2:y=${footerY}[v];`,
       `[2:a]volume=1.0[a1];`,
       `[3:a]volume=0.22[a2];`,
       `[a1][a2]amix=inputs=2:duration=first:dropout_transition=2[a]`,
     ].join("");
 
+    // ⚙️ FFmpeg args optimizados para Railway (evita threads=60 y SIGKILL)
     const args = [
       "-y",
-      // bg
+
+      // Limita uso de CPU
+      "-threads", "2",
+
+      // inputs
       "-i", bgFile,
-      // imagen loop (para que dure)
-      "-loop", "1",
-      "-i", imgFile,
-      // audio
+      "-loop", "1", "-i", imgFile,
       "-i", voicePath,
       "-i", musicPath,
 
@@ -245,15 +200,21 @@ app.post("/render", auth, async (req, res) => {
       "-map", "[v]",
       "-map", "[a]",
 
+      // video más liviano
       "-c:v", "libx264",
-      "-preset", "veryfast",
+      "-preset", "ultrafast",
+      "-crf", "30",
       "-pix_fmt", "yuv420p",
       "-r", "30",
+      "-x264-params", "threads=2",
 
+      // audio más liviano
       "-c:a", "aac",
-      "-b:a", "192k",
+      "-b:a", "96k",
+      "-ac", "1",
+      "-ar", "24000",
 
-      // corta cuando termina la voz
+      "-movflags", "+faststart",
       "-shortest",
 
       outPath,
