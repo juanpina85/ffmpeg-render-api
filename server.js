@@ -89,7 +89,12 @@ function runFfmpeg(args) {
 
 
 // ---- Routes ----
-app.get("/health", (_, res) => res.json({ status: "ok" }));
+app.get("/health", (_, res) =>
+  res.json({
+    status: "ok",
+    build: "v3-lite-threads
+ })
+);
 
 // Debug para ver qué llega desde Make
 app.post("/debug", auth, (req, res) => {
