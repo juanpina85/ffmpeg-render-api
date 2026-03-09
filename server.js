@@ -92,7 +92,7 @@ function runFfmpeg(args) {
 app.get("/health", (_, res) =>
   res.json({
     status: "ok",
-    build: "v3-lite-threads
+    build: "v3-lite-threads"
  })
 );
 
