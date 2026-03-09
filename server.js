@@ -1,3 +1,4 @@
+
 const express = require("express");
 const morgan = require("morgan");
 const axios = require("axios");
@@ -261,4 +262,3 @@ app.post("/render", auth, async (req, res) => {
 app.get("/status/:id", auth, (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json
-
